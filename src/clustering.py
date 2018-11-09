@@ -8,13 +8,13 @@ JARO_CACHE = {}     # {(string1, string2): distance_float} where string1 < strin
 
 
 class Clustering(object):
-    def __init__(self, entity_json: dict, cluster_json: dict, dbpedia2freebase='../dbpedia2freebase.json'):
+    def __init__(self, entity_json: dict, cluster_json: dict, dbpedia2freebase='../../dbpedia2freebase.json'):
         """
         init
         :param entity_json: raw info {entity_uri: [name_or_{translation:[tran1,tran2]}, type, external_link], ... }
         :param cluster_json: raw info {cluster_uri: [[member1, member2], [prototype1]], ... }
         """
-        self.MAP_TO_FREEBASE = json.load(dbpedia2freebase)
+        self.MAP_TO_FREEBASE = json.load(open(dbpedia2freebase))
         self.entities = {}              # self.entities:        {entity_uri: Entity instance}
         self.ta2_clusters = {}          # self.ta2_clusters:    {external_link: Cluster instance}
         self.no_link = {}               # self.no_link:         {entity_no_elink_uri: [(elinks), (ta1_cluster_uris)]}
@@ -90,49 +90,50 @@ class Clustering(object):
         """
         # for each entity in no_link, try to find a best place to go
         visited = set()
+        visited_link = set()
         total = len(self.no_link.items())
         cnt = 0
         for ent_uri, elink_ta1cluster in self.no_link.items():
             cnt += 1
             if cnt % 10000 == 0:
                 print('process %d of %d' % (cnt, total))
+
+            if ent_uri in visited:
+                continue
+
             elinks, ta1s = elink_ta1cluster
             cur_ent = self.entities[ent_uri]
-            if len(elinks):
-                cur_cluster = self.get_best(cur_ent, elinks)
-                cur_cluster.add_member(cur_ent)
-            else:
-                # not directly clustered with entity with elink:
-                # no elinks, try to find chained elinks, otherwise no where to go
-                if ent_uri in visited:
-                    continue
-                visited_no_el_sibling_ent = {ent_uri}
-                elinks = set()
-                added = ta1s
-                to_check = list(ta1s)
-                # TODO: confidence by hops? now ents with >= 1 hop sibling with elinks are treat in the same way
-                while to_check:
-                    cur_cluster = to_check.pop()
-                    for sibling in self.cluster_to_ent[cur_cluster]:
+
+            to_check = list(ta1s)
+            visited_link = visited_link.union(ta1s)
+            related_links = set()
+            no_el_ent = []
+
+            while to_check:
+                cur_cluster = to_check.pop()
+                for sibling in self.cluster_to_ent[cur_cluster]:
+                    if sibling not in visited:
+                        visited.add(sibling)
                         if len(self.no_link[sibling][0]):
                             # find external links
-                            elinks = elinks.union(self.no_link[sibling][0])
+                            related_links = related_links.union(self.no_link[sibling][0])
+                            best_cluster = self.get_best(cur_ent, elinks)
+                            best_cluster.add_member(cur_ent)
                         else:
-                            visited_no_el_sibling_ent.add(ent_uri)
+                            no_el_ent.append(sibling)
                         for next_hop_cluster in self.no_link[sibling][1]:
                             # add other chained clusters to check
-                            if next_hop_cluster not in added:
-                                added.add(next_hop_cluster)
+                            if next_hop_cluster not in visited_link:
+                                visited_link.add(next_hop_cluster)
                                 to_check.append(next_hop_cluster)
                 if len(elinks):
-                    for covered_ent in visited_no_el_sibling_ent:
+                    for covered_ent in no_el_ent:
                         # TODO: chained elinks may be very different in CU clusters, should make use of confidence ?
-                        cur_cluster = self.get_best(self.entities[covered_ent], elinks)
-                        cur_cluster.add_member(self.entities[covered_ent])
+                        best_cluster = self.get_best(self.entities[covered_ent], elinks)
+                        best_cluster.add_member(self.entities[covered_ent])
                 else:
-                    cur_cluster = Cluster([self.entities[covered_ent] for covered_ent in visited_no_el_sibling_ent])
-                    self.no_where_to_go.append(cur_cluster)
-                visited = visited.union(visited_no_el_sibling_ent)
+                    best_cluster = Cluster([self.entities[covered_ent] for covered_ent in no_el_ent])
+                    self.no_where_to_go.append(best_cluster)
 
     def assign_no_where_to_go(self, threshold: float=0.9):
         """
